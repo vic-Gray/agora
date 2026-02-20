@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, String};
+use soroban_sdk::{contracttype, Address, String, Vec};
 
 /// Represents information about an event in the registry.
 #[contracttype]
@@ -30,11 +30,57 @@ pub struct PaymentInfo {
     pub platform_fee_percent: u32,
 }
 
+/// Multi-signature configuration for admin operations
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultiSigConfig {
+    /// List of administrator addresses
+    pub admins: Vec<Address>,
+    /// Number of signatures required to execute a proposal
+    pub threshold: u32,
+}
+
+/// Types of proposed changes that require multi-sig approval
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ProposalType {
+    /// Change the platform wallet address
+    SetPlatformWallet(Address),
+    /// Add a new administrator
+    AddAdmin(Address),
+    /// Remove an existing administrator
+    RemoveAdmin(Address),
+    /// Change the signature threshold
+    SetThreshold(u32),
+}
+
+/// Represents a proposed change awaiting signatures
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Proposal {
+    /// Unique identifier for the proposal
+    pub proposal_id: u64,
+    /// Type of change being proposed
+    pub proposal_type: ProposalType,
+    /// Address that created the proposal
+    pub proposer: Address,
+    /// Addresses that have approved this proposal
+    pub approvals: Vec<Address>,
+    /// Timestamp when proposal was created
+    pub created_at: u64,
+    /// Timestamp when proposal expires (optional)
+    pub expires_at: u64,
+    /// Whether the proposal has been executed
+    pub executed: bool,
+}
+
 /// Storage keys for the Event Registry contract.
 #[contracttype]
 pub enum DataKey {
-    /// The administrator address for contract management
+    /// The administrator address for contract management (legacy, kept for backward compatibility)
     Admin,
+    /// Multi-signature configuration
+    MultiSigConfig,
     /// The platform wallet address for fee collection
     PlatformWallet,
     /// The global platform fee percentage
@@ -45,4 +91,10 @@ pub enum DataKey {
     Event(String),
     /// Mapping of organizer_address to a list of their event_ids (Persistent)
     OrganizerEvents(Address),
+    /// Counter for proposal IDs
+    ProposalCounter,
+    /// Mapping of proposal_id to Proposal
+    Proposal(u64),
+    /// List of active proposal IDs
+    ActiveProposals,
 }

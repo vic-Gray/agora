@@ -13,6 +13,16 @@ pub enum EventRegistryError {
     NotInitialized = 7,
     AlreadyInitialized = 8,
     InvalidMetadataCid = 9,
+    ProposalNotFound = 10,
+    ProposalAlreadyExecuted = 11,
+    ProposalExpired = 12,
+    AlreadyApproved = 13,
+    InsufficientApprovals = 14,
+    InvalidThreshold = 15,
+    AdminAlreadyExists = 16,
+    AdminNotFound = 17,
+    CannotRemoveLastAdmin = 18,
+    InvalidProposalType = 19,
 }
 
 impl core::fmt::Display for EventRegistryError {
@@ -31,6 +41,22 @@ impl core::fmt::Display for EventRegistryError {
             EventRegistryError::NotInitialized => write!(f, "Contract not initialized"),
             EventRegistryError::AlreadyInitialized => write!(f, "Contract already initialized"),
             EventRegistryError::InvalidMetadataCid => write!(f, "Invalid IPFS Metadata CID format"),
+            EventRegistryError::ProposalNotFound => write!(f, "Proposal not found"),
+            EventRegistryError::ProposalAlreadyExecuted => write!(f, "Proposal already executed"),
+            EventRegistryError::ProposalExpired => write!(f, "Proposal has expired"),
+            EventRegistryError::AlreadyApproved => write!(f, "Already approved by this admin"),
+            EventRegistryError::InsufficientApprovals => {
+                write!(f, "Insufficient approvals to execute proposal")
+            }
+            EventRegistryError::InvalidThreshold => {
+                write!(f, "Threshold must be greater than 0 and not exceed admin count")
+            }
+            EventRegistryError::AdminAlreadyExists => write!(f, "Admin already exists"),
+            EventRegistryError::AdminNotFound => write!(f, "Admin not found"),
+            EventRegistryError::CannotRemoveLastAdmin => {
+                write!(f, "Cannot remove the last admin")
+            }
+            EventRegistryError::InvalidProposalType => write!(f, "Invalid proposal type"),
         }
     }
 }

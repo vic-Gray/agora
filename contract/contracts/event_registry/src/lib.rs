@@ -1,10 +1,12 @@
 #![no_std]
 
 use crate::events::{
-    AgoraEvent, EventRegisteredEvent, EventStatusUpdatedEvent, FeeUpdatedEvent,
-    InitializationEvent, MetadataUpdatedEvent, RegistryUpgradedEvent,
+    AdminAddedEvent, AdminRemovedEvent, AgoraEvent, EventRegisteredEvent,
+    EventStatusUpdatedEvent, FeeUpdatedEvent, InitializationEvent, MetadataUpdatedEvent,
+    ProposalApprovedEvent, ProposalCreatedEvent, ProposalExecutedEvent, RegistryUpgradedEvent,
+    ThresholdUpdatedEvent,
 };
-use crate::types::{EventInfo, PaymentInfo};
+use crate::types::{EventInfo, MultiSigConfig, PaymentInfo, Proposal, ProposalType};
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
 
 pub mod error;
@@ -21,6 +23,7 @@ pub struct EventRegistry;
 #[allow(deprecated)]
 impl EventRegistry {
     /// Initializes the contract configuration. Can only be called once.
+    /// Sets up initial admin with multi-sig configuration (threshold = 1 for single admin).
     ///
     /// # Arguments
     /// * `admin` - The administrator address.
@@ -48,7 +51,17 @@ impl EventRegistry {
         if initial_fee > 10000 {
             return Err(EventRegistryError::InvalidFeePercent);
         }
-        storage::set_admin(&env, &admin);
+
+        // Initialize multi-sig with single admin and threshold of 1
+        let mut admins = Vec::new(&env);
+        admins.push_back(admin.clone());
+        let multisig_config = MultiSigConfig {
+            admins,
+            threshold: 1,
+        };
+
+        storage::set_admin(&env, &admin); // Legacy support
+        storage::set_multisig_config(&env, &multisig_config);
         storage::set_platform_wallet(&env, &platform_wallet);
         storage::set_platform_fee(&env, initial_fee);
         storage::set_initialized(&env, true);
@@ -282,6 +295,295 @@ impl EventRegistry {
 
         Ok(())
     }
+
+    // ==================== MULTI-SIG GOVERNANCE FUNCTIONS ====================
+
+    /// Creates a proposal for changing sensitive platform parameters.
+    /// Any admin can create a proposal.
+    ///
+    /// # Arguments
+    /// * `proposer` - The admin creating the proposal
+    /// * `proposal_type` - The type of change being proposed
+    /// * `expiration_ledgers` - Number of ledgers until proposal expires (0 = no expiration)
+    pub fn create_proposal(
+        env: Env,
+        proposer: Address,
+        proposal_type: ProposalType,
+        expiration_ledgers: u32,
+    ) -> Result<u64, EventRegistryError> {
+        if !storage::is_initialized(&env) {
+            return Err(EventRegistryError::NotInitialized);
+        }
+
+        // Verify proposer is an admin
+        proposer.require_auth();
+        if !storage::is_admin(&env, &proposer) {
+            return Err(EventRegistryError::Unauthorized);
+        }
+
+        // Validate proposal type
+        validate_proposal_type(&env, &proposal_type)?;
+
+        let proposal_id = storage::get_next_proposal_id(&env);
+        let created_at = env.ledger().timestamp();
+        let expires_at = if expiration_ledgers > 0 {
+            created_at + (expiration_ledgers as u64 * 5) // Approximate 5 seconds per ledger
+        } else {
+            u64::MAX // No expiration
+        };
+
+        let mut approvals = Vec::new(&env);
+        approvals.push_back(proposer.clone()); // Proposer automatically approves
+
+        let proposal = Proposal {
+            proposal_id,
+            proposal_type,
+            proposer: proposer.clone(),
+            approvals,
+            created_at,
+            expires_at,
+            executed: false,
+        };
+
+        storage::store_proposal(&env, &proposal);
+
+        env.events().publish(
+            (AgoraEvent::ProposalCreated,),
+            ProposalCreatedEvent {
+                proposal_id,
+                proposer,
+                timestamp: created_at,
+            },
+        );
+
+        Ok(proposal_id)
+    }
+
+    /// Approves a proposal. Each admin can approve once.
+    ///
+    /// # Arguments
+    /// * `approver` - The admin approving the proposal
+    /// * `proposal_id` - The ID of the proposal to approve
+    pub fn approve_proposal(
+        env: Env,
+        approver: Address,
+        proposal_id: u64,
+    ) -> Result<(), EventRegistryError> {
+        approver.require_auth();
+
+        if !storage::is_admin(&env, &approver) {
+            return Err(EventRegistryError::Unauthorized);
+        }
+
+        let mut proposal = storage::get_proposal(&env, proposal_id)
+            .ok_or(EventRegistryError::ProposalNotFound)?;
+
+        if proposal.executed {
+            return Err(EventRegistryError::ProposalAlreadyExecuted);
+        }
+
+        // Check expiration
+        if proposal.expires_at != u64::MAX && env.ledger().timestamp() > proposal.expires_at {
+            return Err(EventRegistryError::ProposalExpired);
+        }
+
+        // Check if already approved
+        for approval in proposal.approvals.iter() {
+            if approval == approver {
+                return Err(EventRegistryError::AlreadyApproved);
+            }
+        }
+
+        proposal.approvals.push_back(approver.clone());
+        storage::store_proposal(&env, &proposal);
+
+        env.events().publish(
+            (AgoraEvent::ProposalApproved,),
+            ProposalApprovedEvent {
+                proposal_id,
+                approver,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Executes a proposal if it has sufficient approvals.
+    ///
+    /// # Arguments
+    /// * `executor` - The admin executing the proposal
+    /// * `proposal_id` - The ID of the proposal to execute
+    pub fn execute_proposal(
+        env: Env,
+        executor: Address,
+        proposal_id: u64,
+    ) -> Result<(), EventRegistryError> {
+        executor.require_auth();
+
+        if !storage::is_admin(&env, &executor) {
+            return Err(EventRegistryError::Unauthorized);
+        }
+
+        let mut proposal = storage::get_proposal(&env, proposal_id)
+            .ok_or(EventRegistryError::ProposalNotFound)?;
+
+        if proposal.executed {
+            return Err(EventRegistryError::ProposalAlreadyExecuted);
+        }
+
+        // Check expiration
+        if proposal.expires_at != u64::MAX && env.ledger().timestamp() > proposal.expires_at {
+            return Err(EventRegistryError::ProposalExpired);
+        }
+
+        let config = storage::get_multisig_config(&env)
+            .ok_or(EventRegistryError::NotInitialized)?;
+
+        // Check if proposal has sufficient approvals
+        if (proposal.approvals.len() as u32) < config.threshold {
+            return Err(EventRegistryError::InsufficientApprovals);
+        }
+
+        // Execute the proposal based on type
+        match &proposal.proposal_type {
+            ProposalType::SetPlatformWallet(new_wallet) => {
+                validate_address(&env, new_wallet)?;
+                storage::set_platform_wallet(&env, new_wallet);
+            }
+            ProposalType::AddAdmin(new_admin) => {
+                validate_address(&env, new_admin)?;
+                add_admin_internal(&env, new_admin)?;
+                env.events().publish(
+                    (AgoraEvent::AdminAdded,),
+                    AdminAddedEvent {
+                        admin: new_admin.clone(),
+                        added_by: executor.clone(),
+                        timestamp: env.ledger().timestamp(),
+                    },
+                );
+            }
+            ProposalType::RemoveAdmin(admin_to_remove) => {
+                remove_admin_internal(&env, admin_to_remove)?;
+                env.events().publish(
+                    (AgoraEvent::AdminRemoved,),
+                    AdminRemovedEvent {
+                        admin: admin_to_remove.clone(),
+                        removed_by: executor.clone(),
+                        timestamp: env.ledger().timestamp(),
+                    },
+                );
+            }
+            ProposalType::SetThreshold(new_threshold) => {
+                set_threshold_internal(&env, *new_threshold)?;
+                env.events().publish(
+                    (AgoraEvent::ThresholdUpdated,),
+                    ThresholdUpdatedEvent {
+                        old_threshold: config.threshold,
+                        new_threshold: *new_threshold,
+                        timestamp: env.ledger().timestamp(),
+                    },
+                );
+            }
+        }
+
+        // Mark proposal as executed
+        proposal.executed = true;
+        storage::store_proposal(&env, &proposal);
+        storage::remove_from_active_proposals(&env, proposal_id);
+
+        env.events().publish(
+            (AgoraEvent::ProposalExecuted,),
+            ProposalExecutedEvent {
+                proposal_id,
+                executor,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Retrieves a proposal by ID.
+    pub fn get_proposal(env: Env, proposal_id: u64) -> Result<Proposal, EventRegistryError> {
+        storage::get_proposal(&env, proposal_id).ok_or(EventRegistryError::ProposalNotFound)
+    }
+
+    /// Retrieves all active proposal IDs.
+    pub fn get_active_proposals(env: Env) -> Vec<u64> {
+        storage::get_active_proposals(&env)
+    }
+
+    /// Retrieves the current multi-sig configuration.
+    pub fn get_multisig_config(env: Env) -> Result<MultiSigConfig, EventRegistryError> {
+        storage::get_multisig_config(&env).ok_or(EventRegistryError::NotInitialized)
+    }
+
+    /// Checks if an address is an admin.
+    pub fn is_admin(env: Env, address: Address) -> bool {
+        storage::is_admin(&env, &address)
+    }
+
+    /// Proposes to change the platform wallet (requires multi-sig approval).
+    /// This is a convenience function that creates a proposal.
+    pub fn propose_set_platform_wallet(
+        env: Env,
+        proposer: Address,
+        new_wallet: Address,
+        expiration_ledgers: u32,
+    ) -> Result<u64, EventRegistryError> {
+        Self::create_proposal(
+            env,
+            proposer,
+            ProposalType::SetPlatformWallet(new_wallet),
+            expiration_ledgers,
+        )
+    }
+
+    /// Proposes to add a new admin (requires multi-sig approval).
+    pub fn propose_add_admin(
+        env: Env,
+        proposer: Address,
+        new_admin: Address,
+        expiration_ledgers: u32,
+    ) -> Result<u64, EventRegistryError> {
+        Self::create_proposal(
+            env,
+            proposer,
+            ProposalType::AddAdmin(new_admin),
+            expiration_ledgers,
+        )
+    }
+
+    /// Proposes to remove an admin (requires multi-sig approval).
+    pub fn propose_remove_admin(
+        env: Env,
+        proposer: Address,
+        admin_to_remove: Address,
+        expiration_ledgers: u32,
+    ) -> Result<u64, EventRegistryError> {
+        Self::create_proposal(
+            env,
+            proposer,
+            ProposalType::RemoveAdmin(admin_to_remove),
+            expiration_ledgers,
+        )
+    }
+
+    /// Proposes to change the signature threshold (requires multi-sig approval).
+    pub fn propose_set_threshold(
+        env: Env,
+        proposer: Address,
+        new_threshold: u32,
+        expiration_ledgers: u32,
+    ) -> Result<u64, EventRegistryError> {
+        Self::create_proposal(
+            env,
+            proposer,
+            ProposalType::SetThreshold(new_threshold),
+            expiration_ledgers,
+        )
+    }
 }
 
 fn validate_address(env: &Env, address: &Address) -> Result<(), EventRegistryError> {
@@ -308,5 +610,107 @@ fn validate_metadata_cid(env: &Env, cid: &String) -> Result<(), EventRegistryErr
     Ok(())
 }
 
+fn validate_proposal_type(env: &Env, proposal_type: &ProposalType) -> Result<(), EventRegistryError> {
+    match proposal_type {
+        ProposalType::SetPlatformWallet(wallet) => validate_address(env, wallet),
+        ProposalType::AddAdmin(admin) => {
+            validate_address(env, admin)?;
+            // Check if admin already exists
+            if storage::is_admin(env, admin) {
+                return Err(EventRegistryError::AdminAlreadyExists);
+            }
+            Ok(())
+        }
+        ProposalType::RemoveAdmin(admin) => {
+            // Check if admin exists
+            if !storage::is_admin(env, admin) {
+                return Err(EventRegistryError::AdminNotFound);
+            }
+            // Check if this would remove the last admin
+            let config = storage::get_multisig_config(env)
+                .ok_or(EventRegistryError::NotInitialized)?;
+            if config.admins.len() <= 1 {
+                return Err(EventRegistryError::CannotRemoveLastAdmin);
+            }
+            Ok(())
+        }
+        ProposalType::SetThreshold(threshold) => {
+            let config = storage::get_multisig_config(env)
+                .ok_or(EventRegistryError::NotInitialized)?;
+            if *threshold == 0 || *threshold > config.admins.len() as u32 {
+                return Err(EventRegistryError::InvalidThreshold);
+            }
+            Ok(())
+        }
+    }
+}
+
+fn add_admin_internal(env: &Env, new_admin: &Address) -> Result<(), EventRegistryError> {
+    let mut config = storage::get_multisig_config(env)
+        .ok_or(EventRegistryError::NotInitialized)?;
+
+    // Check if admin already exists
+    for admin in config.admins.iter() {
+        if admin == *new_admin {
+            return Err(EventRegistryError::AdminAlreadyExists);
+        }
+    }
+
+    config.admins.push_back(new_admin.clone());
+    storage::set_multisig_config(env, &config);
+    Ok(())
+}
+
+fn remove_admin_internal(env: &Env, admin_to_remove: &Address) -> Result<(), EventRegistryError> {
+    let mut config = storage::get_multisig_config(env)
+        .ok_or(EventRegistryError::NotInitialized)?;
+
+    // Prevent removing the last admin
+    if config.admins.len() <= 1 {
+        return Err(EventRegistryError::CannotRemoveLastAdmin);
+    }
+
+    let mut new_admins = Vec::new(env);
+    let mut found = false;
+
+    for admin in config.admins.iter() {
+        if admin == *admin_to_remove {
+            found = true;
+        } else {
+            new_admins.push_back(admin);
+        }
+    }
+
+    if !found {
+        return Err(EventRegistryError::AdminNotFound);
+    }
+
+    config.admins = new_admins;
+
+    // Adjust threshold if it exceeds the new admin count
+    if config.threshold > config.admins.len() as u32 {
+        config.threshold = config.admins.len() as u32;
+    }
+
+    storage::set_multisig_config(env, &config);
+    Ok(())
+}
+
+fn set_threshold_internal(env: &Env, new_threshold: u32) -> Result<(), EventRegistryError> {
+    let mut config = storage::get_multisig_config(env)
+        .ok_or(EventRegistryError::NotInitialized)?;
+
+    if new_threshold == 0 || new_threshold > config.admins.len() as u32 {
+        return Err(EventRegistryError::InvalidThreshold);
+    }
+
+    config.threshold = new_threshold;
+    storage::set_multisig_config(env, &config);
+    Ok(())
+}
+
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod test_multisig;

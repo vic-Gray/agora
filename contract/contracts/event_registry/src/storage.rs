@@ -1,14 +1,38 @@
-use crate::types::{DataKey, EventInfo};
+use crate::types::{DataKey, EventInfo, MultiSigConfig, Proposal};
 use soroban_sdk::{Address, Env, String, Vec};
 
-/// Sets the administrator address of the contract.
+/// Sets the administrator address of the contract (legacy function).
 pub fn set_admin(env: &Env, admin: &Address) {
     env.storage().persistent().set(&DataKey::Admin, admin);
 }
 
-/// Retrieves the administrator address of the contract.
+/// Retrieves the administrator address of the contract (legacy function).
 pub fn get_admin(env: &Env) -> Option<Address> {
     env.storage().persistent().get(&DataKey::Admin)
+}
+
+/// Sets the multi-signature configuration.
+pub fn set_multisig_config(env: &Env, config: &MultiSigConfig) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::MultiSigConfig, config);
+}
+
+/// Retrieves the multi-signature configuration.
+pub fn get_multisig_config(env: &Env) -> Option<MultiSigConfig> {
+    env.storage().persistent().get(&DataKey::MultiSigConfig)
+}
+
+/// Checks if an address is an admin.
+pub fn is_admin(env: &Env, address: &Address) -> bool {
+    if let Some(config) = get_multisig_config(env) {
+        for admin in config.admins.iter() {
+            if admin == *address {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Sets the platform wallet address of the contract.
@@ -54,6 +78,75 @@ pub fn is_initialized(env: &Env) -> bool {
         .persistent()
         .get(&DataKey::Initialized)
         .unwrap_or(false)
+}
+
+/// Gets the next proposal ID and increments the counter.
+pub fn get_next_proposal_id(env: &Env) -> u64 {
+    let current: u64 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::ProposalCounter)
+        .unwrap_or(0);
+    env.storage()
+        .persistent()
+        .set(&DataKey::ProposalCounter, &(current + 1));
+    current
+}
+
+/// Stores a proposal.
+pub fn store_proposal(env: &Env, proposal: &Proposal) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::Proposal(proposal.proposal_id), proposal);
+
+    // Add to active proposals list if not executed
+    if !proposal.executed {
+        let mut active_proposals: Vec<u64> = get_active_proposals(env);
+        let mut exists = false;
+        for id in active_proposals.iter() {
+            if id == proposal.proposal_id {
+                exists = true;
+                break;
+            }
+        }
+        if !exists {
+            active_proposals.push_back(proposal.proposal_id);
+            env.storage()
+                .persistent()
+                .set(&DataKey::ActiveProposals, &active_proposals);
+        }
+    }
+}
+
+/// Retrieves a proposal by ID.
+pub fn get_proposal(env: &Env, proposal_id: u64) -> Option<Proposal> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::Proposal(proposal_id))
+}
+
+/// Retrieves all active proposal IDs.
+pub fn get_active_proposals(env: &Env) -> Vec<u64> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ActiveProposals)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Removes a proposal from the active list (when executed or expired).
+pub fn remove_from_active_proposals(env: &Env, proposal_id: u64) {
+    let mut active_proposals: Vec<u64> = get_active_proposals(env);
+    let mut new_proposals = Vec::new(env);
+
+    for id in active_proposals.iter() {
+        if id != proposal_id {
+            new_proposals.push_back(id);
+        }
+    }
+
+    env.storage()
+        .persistent()
+        .set(&DataKey::ActiveProposals, &new_proposals);
 }
 
 /// Stores a new event or updates an existing one.
