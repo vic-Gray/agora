@@ -52,6 +52,19 @@ pub struct EventInfo {
     pub milestone_plan: Option<Vec<Milestone>>,
     /// Map of tier_id to TicketTier for multi-tiered pricing
     pub tiers: Map<String, TicketTier>,
+    /// Deadline for guests to request a refund (Unix timestamp)
+    pub refund_deadline: u64,
+    /// Fee deducted from refund amount
+    pub restocking_fee: i128,
+    /// Optional resale price cap in basis points above face value.
+    /// None = no cap (free market), Some(0) = no markup, Some(1000) = max 10% above face value.
+    pub resale_cap_bps: Option<u32>,
+    /// Indicates whether the event is currently postponed (date shifted)
+    /// and in a temporary refund grace period window.
+    pub is_postponed: bool,
+    /// Timestamp (Unix) when the temporary refund grace period for a
+    /// postponed event ends. 0 means no grace period active.
+    pub grace_period_end: u64,
 }
 
 /// Payment information for an event
@@ -77,6 +90,26 @@ pub struct EventRegistrationArgs {
     pub max_supply: i128,
     pub milestone_plan: Option<Vec<Milestone>>,
     pub tiers: Map<String, TicketTier>,
+    pub refund_deadline: u64,
+    pub restocking_fee: i128,
+    /// Optional resale price cap in basis points above face value.
+    pub resale_cap_bps: Option<u32>,
+}
+
+/// Audit log entry for blacklist actions
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BlacklistAuditEntry {
+    /// The organizer address that was blacklisted or removed from blacklist
+    pub organizer_address: Address,
+    /// Whether the organizer was added (true) or removed (false) from blacklist
+    pub added_to_blacklist: bool,
+    /// The admin who performed the action
+    pub admin_address: Address,
+    /// Reason for the blacklist action
+    pub reason: String,
+    /// Timestamp when the action was performed
+    pub timestamp: u64,
 }
 
 /// Storage keys for the Event Registry contract.
@@ -98,10 +131,12 @@ pub enum DataKey {
     OrganizerEvents(Address),
     /// The authorized TicketPayment contract address for inventory updates
     TicketPaymentContract,
-    /// Counter for proposal IDs
-    ProposalCounter,
-    /// Mapping of proposal_id to Proposal
-    Proposal(u64),
-    /// List of active proposal IDs
-    ActiveProposals,
+    /// Mapping of organizer address to blacklist status (Persistent)
+    BlacklistedOrganizer(Address),
+    /// List of blacklisted organizer addresses for audit purposes (Persistent)
+    BlacklistLog,
+    /// Global promotional discount in basis points (e.g., 1500 = 15%)
+    GlobalPromoBps,
+    /// Expiry timestamp for the global promotional discount
+    PromoExpiry,
 }

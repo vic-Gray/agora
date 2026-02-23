@@ -1,12 +1,12 @@
 #![no_std]
 
 use crate::events::{
-    AdminAddedEvent, AdminRemovedEvent, AgoraEvent, EventRegisteredEvent, EventStatusUpdatedEvent,
-    FeeUpdatedEvent, InitializationEvent, InventoryIncrementedEvent, MetadataUpdatedEvent,
-    ProposalApprovedEvent, ProposalCreatedEvent, ProposalExecutedEvent, RegistryUpgradedEvent,
-    ThresholdUpdatedEvent,
+    AgoraEvent, EventPostponedEvent, EventRegisteredEvent, EventStatusUpdatedEvent,
+    EventsSuspendedEvent, FeeUpdatedEvent, GlobalPromoUpdatedEvent, InitializationEvent,
+    InventoryIncrementedEvent, MetadataUpdatedEvent, OrganizerBlacklistedEvent,
+    OrganizerRemovedFromBlacklistEvent, RegistryUpgradedEvent,
 };
-use crate::types::{EventInfo, EventRegistrationArgs, PaymentInfo};
+use crate::types::{BlacklistAuditEntry, EventInfo, EventRegistrationArgs, PaymentInfo};
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
 
 pub mod error;
@@ -93,6 +93,11 @@ impl EventRegistry {
         }
         args.organizer_address.require_auth();
 
+        // Check if organizer is blacklisted
+        if storage::is_blacklisted(&env, &args.organizer_address) {
+            return Err(EventRegistryError::OrganizerBlacklisted);
+        }
+
         validate_metadata_cid(&env, &args.metadata_cid)?;
 
         if storage::event_exists(&env, args.event_id.clone()) {
@@ -112,6 +117,13 @@ impl EventRegistry {
             }
         }
 
+        // Validate resale cap if provided
+        if let Some(cap) = args.resale_cap_bps {
+            if cap > 10000 {
+                return Err(EventRegistryError::InvalidResaleCapBps);
+            }
+        }
+
         let platform_fee_percent = storage::get_platform_fee(&env);
 
         let event_info = EventInfo {
@@ -126,6 +138,11 @@ impl EventRegistry {
             current_supply: 0,
             milestone_plan: args.milestone_plan.clone(),
             tiers: args.tiers.clone(),
+            refund_deadline: args.refund_deadline,
+            restocking_fee: args.restocking_fee,
+            resale_cap_bps: args.resale_cap_bps,
+            is_postponed: false,
+            grace_period_end: 0,
         };
 
         storage::store_event(&env, event_info);
@@ -174,9 +191,14 @@ impl EventRegistry {
                 // Verify organizer signature
                 event_info.organizer_address.require_auth();
 
+                // Skip storage/event writes when status is unchanged.
+                if event_info.is_active == is_active {
+                    return Ok(());
+                }
+
                 // Update status
                 event_info.is_active = is_active;
-                storage::store_event(&env, event_info.clone());
+                storage::update_event(&env, event_info.clone());
 
                 // Emit status update event using contract event type
                 env.events().publish(
@@ -209,9 +231,14 @@ impl EventRegistry {
                 // Validate new metadata CID
                 validate_metadata_cid(&env, &new_metadata_cid)?;
 
+                // Skip storage/event writes when metadata is unchanged.
+                if event_info.metadata_cid == new_metadata_cid {
+                    return Ok(());
+                }
+
                 // Update metadata
                 event_info.metadata_cid = new_metadata_cid.clone();
-                storage::store_event(&env, event_info.clone());
+                storage::update_event(&env, event_info.clone());
 
                 // Emit metadata update event
                 env.events().publish(
@@ -328,10 +355,15 @@ impl EventRegistry {
         env: Env,
         event_id: String,
         tier_id: String,
+        quantity: u32,
     ) -> Result<(), EventRegistryError> {
         let ticket_payment_addr =
             storage::get_ticket_payment_contract(&env).ok_or(EventRegistryError::NotInitialized)?;
         ticket_payment_addr.require_auth();
+
+        if quantity == 0 {
+            return Err(EventRegistryError::InvalidQuantity);
+        }
 
         let mut event_info =
             storage::get_event(&env, event_id.clone()).ok_or(EventRegistryError::EventNotFound)?;
@@ -340,9 +372,17 @@ impl EventRegistry {
             return Err(EventRegistryError::EventInactive);
         }
 
+        let quantity_i128 = quantity as i128;
+
         // Check global supply limits
-        if event_info.max_supply > 0 && event_info.current_supply >= event_info.max_supply {
-            return Err(EventRegistryError::MaxSupplyExceeded);
+        if event_info.max_supply > 0 {
+            let new_total_supply = event_info
+                .current_supply
+                .checked_add(quantity_i128)
+                .ok_or(EventRegistryError::SupplyOverflow)?;
+            if new_total_supply > event_info.max_supply {
+                return Err(EventRegistryError::MaxSupplyExceeded);
+            }
         }
 
         // Get and update tier
@@ -351,30 +391,31 @@ impl EventRegistry {
             .get(tier_id.clone())
             .ok_or(EventRegistryError::TierNotFound)?;
 
-        if tier.current_sold >= tier.tier_limit {
+        let new_tier_sold = tier
+            .current_sold
+            .checked_add(quantity_i128)
+            .ok_or(EventRegistryError::SupplyOverflow)?;
+
+        if new_tier_sold > tier.tier_limit {
             return Err(EventRegistryError::TierSupplyExceeded);
         }
 
-        tier.current_sold = tier
-            .current_sold
-            .checked_add(1)
-            .ok_or(EventRegistryError::SupplyOverflow)?;
-
+        tier.current_sold = new_tier_sold;
         event_info.tiers.set(tier_id, tier);
 
         event_info.current_supply = event_info
             .current_supply
-            .checked_add(1)
+            .checked_add(quantity_i128)
             .ok_or(EventRegistryError::SupplyOverflow)?;
 
-        storage::store_event(&env, event_info.clone());
+        let new_supply = event_info.current_supply;
+        storage::update_event(&env, event_info);
 
         env.events().publish(
             (AgoraEvent::InventoryIncremented,),
             InventoryIncrementedEvent {
                 event_id,
-                new_supply: event_info.current_supply,
-                max_supply: event_info.max_supply,
+                new_supply,
                 timestamp: env.ledger().timestamp(),
             },
         );
@@ -432,14 +473,14 @@ impl EventRegistry {
             .checked_sub(1)
             .ok_or(EventRegistryError::SupplyUnderflow)?;
 
-        storage::store_event(&env, event_info.clone());
+        let new_supply = event_info.current_supply;
+        storage::update_event(&env, event_info);
 
         env.events().publish(
             (crate::events::AgoraEvent::InventoryDecremented,),
             crate::events::InventoryDecrementedEvent {
                 event_id,
-                new_supply: event_info.current_supply,
-                max_supply: event_info.max_supply,
+                new_supply,
                 timestamp: env.ledger().timestamp(),
             },
         );
@@ -470,112 +511,90 @@ impl EventRegistry {
         Ok(())
     }
 
-    // ==================== MULTI-SIG GOVERNANCE FUNCTIONS ====================
-
-    /// Creates a proposal for changing sensitive platform parameters.
-    /// Any admin can create a proposal.
-    ///
-    /// # Arguments
-    /// * `proposer` - The admin creating the proposal
-    /// * `proposal_type` - The type of change being proposed
-    /// * `expiration_ledgers` - Number of ledgers until proposal expires (0 = no expiration)
-    pub fn create_proposal(
+    /// Adds an organizer to the blacklist with mandatory audit logging.
+    /// Only callable by the administrator.
+    pub fn blacklist_organizer(
         env: Env,
-        proposer: Address,
-        proposal_type: ProposalType,
-        expiration_ledgers: u32,
-    ) -> Result<u64, EventRegistryError> {
-        if !storage::is_initialized(&env) {
-            return Err(EventRegistryError::NotInitialized);
+        organizer_address: Address,
+        reason: String,
+    ) -> Result<(), EventRegistryError> {
+        let admin = storage::get_admin(&env).ok_or(EventRegistryError::NotInitialized)?;
+        admin.require_auth();
+
+        validate_address(&env, &organizer_address)?;
+
+        // Check if already blacklisted
+        if storage::is_blacklisted(&env, &organizer_address) {
+            return Err(EventRegistryError::OrganizerBlacklisted);
         }
 
-        // Verify proposer is an admin
-        proposer.require_auth();
-        if !storage::is_admin(&env, &proposer) {
-            return Err(EventRegistryError::Unauthorized);
-        }
+        // Add to blacklist
+        storage::add_to_blacklist(&env, &organizer_address);
 
-        // Validate proposal type
-        validate_proposal_type(&env, &proposal_type)?;
-
-        let proposal_id = storage::get_next_proposal_id(&env);
-        let created_at = env.ledger().timestamp();
-        let expires_at = if expiration_ledgers > 0 {
-            created_at + (expiration_ledgers as u64 * 5) // Approximate 5 seconds per ledger
-        } else {
-            u64::MAX // No expiration
+        // Create audit log entry
+        let audit_entry = BlacklistAuditEntry {
+            organizer_address: organizer_address.clone(),
+            added_to_blacklist: true,
+            admin_address: admin.clone(),
+            reason: reason.clone(),
+            timestamp: env.ledger().timestamp(),
         };
+        storage::add_blacklist_audit_entry(&env, audit_entry);
 
-        let mut approvals = Vec::new(&env);
-        approvals.push_back(proposer.clone()); // Proposer automatically approves
-
-        let proposal = Proposal {
-            proposal_id,
-            proposal_type,
-            proposer: proposer.clone(),
-            approvals,
-            created_at,
-            expires_at,
-            executed: false,
-        };
-
-        storage::store_proposal(&env, &proposal);
-
+        // Emit blacklist event
         env.events().publish(
-            (AgoraEvent::ProposalCreated,),
-            ProposalCreatedEvent {
-                proposal_id,
-                proposer,
-                timestamp: created_at,
+            (AgoraEvent::OrganizerBlacklisted,),
+            OrganizerBlacklistedEvent {
+                organizer_address: organizer_address.clone(),
+                admin_address: admin.clone(),
+                reason: reason.clone(),
+                timestamp: env.ledger().timestamp(),
             },
         );
 
-        Ok(proposal_id)
+        // Suspend all active events from this organizer
+        suspend_organizer_events(env.clone(), organizer_address)?;
+
+        Ok(())
     }
 
-    /// Approves a proposal. Each admin can approve once.
-    ///
-    /// # Arguments
-    /// * `approver` - The admin approving the proposal
-    /// * `proposal_id` - The ID of the proposal to approve
-    pub fn approve_proposal(
+    /// Removes an organizer from the blacklist with mandatory audit logging.
+    /// Only callable by the administrator.
+    pub fn remove_from_blacklist(
         env: Env,
-        approver: Address,
-        proposal_id: u64,
+        organizer_address: Address,
+        reason: String,
     ) -> Result<(), EventRegistryError> {
-        approver.require_auth();
+        let admin = storage::get_admin(&env).ok_or(EventRegistryError::NotInitialized)?;
+        admin.require_auth();
 
-        if !storage::is_admin(&env, &approver) {
-            return Err(EventRegistryError::Unauthorized);
+        validate_address(&env, &organizer_address)?;
+
+        // Check if currently blacklisted
+        if !storage::is_blacklisted(&env, &organizer_address) {
+            return Err(EventRegistryError::OrganizerNotBlacklisted);
         }
 
-        let mut proposal =
-            storage::get_proposal(&env, proposal_id).ok_or(EventRegistryError::ProposalNotFound)?;
+        // Remove from blacklist
+        storage::remove_from_blacklist(&env, &organizer_address);
 
-        if proposal.executed {
-            return Err(EventRegistryError::ProposalAlreadyExecuted);
-        }
+        // Create audit log entry
+        let audit_entry = BlacklistAuditEntry {
+            organizer_address: organizer_address.clone(),
+            added_to_blacklist: false,
+            admin_address: admin.clone(),
+            reason: reason.clone(),
+            timestamp: env.ledger().timestamp(),
+        };
+        storage::add_blacklist_audit_entry(&env, audit_entry);
 
-        // Check expiration
-        if proposal.expires_at != u64::MAX && env.ledger().timestamp() > proposal.expires_at {
-            return Err(EventRegistryError::ProposalExpired);
-        }
-
-        // Check if already approved
-        for approval in proposal.approvals.iter() {
-            if approval == approver {
-                return Err(EventRegistryError::AlreadyApproved);
-            }
-        }
-
-        proposal.approvals.push_back(approver.clone());
-        storage::store_proposal(&env, &proposal);
-
+        // Emit removal event
         env.events().publish(
-            (AgoraEvent::ProposalApproved,),
-            ProposalApprovedEvent {
-                proposal_id,
-                approver,
+            (AgoraEvent::OrganizerRemovedFromBlacklist,),
+            OrganizerRemovedFromBlacklistEvent {
+                organizer_address,
+                admin_address: admin,
+                reason,
                 timestamp: env.ledger().timestamp(),
             },
         );
@@ -583,94 +602,43 @@ impl EventRegistry {
         Ok(())
     }
 
-    /// Executes a proposal if it has sufficient approvals.
+    /// Checks if an organizer is blacklisted.
+    pub fn is_organizer_blacklisted(env: Env, organizer_address: Address) -> bool {
+        storage::is_blacklisted(&env, &organizer_address)
+    }
+
+    /// Retrieves the blacklist audit log.
+    pub fn get_blacklist_audit_log(env: Env) -> Vec<BlacklistAuditEntry> {
+        storage::get_blacklist_audit_log(&env)
+    }
+
+    /// Sets a platform-wide promotional discount. Only callable by the administrator.
+    /// The promo automatically expires when the ledger timestamp passes `promo_expiry`.
     ///
     /// # Arguments
-    /// * `executor` - The admin executing the proposal
-    /// * `proposal_id` - The ID of the proposal to execute
-    pub fn execute_proposal(
+    /// * `global_promo_bps` - Discount rate in basis points (e.g., 1500 = 15% off). 0 clears the promo.
+    /// * `promo_expiry` - Unix timestamp after which the promo is no longer applied.
+    pub fn set_global_promo(
         env: Env,
-        executor: Address,
-        proposal_id: u64,
+        global_promo_bps: u32,
+        promo_expiry: u64,
     ) -> Result<(), EventRegistryError> {
-        executor.require_auth();
+        let admin = storage::get_admin(&env).ok_or(EventRegistryError::NotInitialized)?;
+        admin.require_auth();
 
-        if !storage::is_admin(&env, &executor) {
-            return Err(EventRegistryError::Unauthorized);
+        if global_promo_bps > 10000 {
+            return Err(EventRegistryError::InvalidPromoBps);
         }
 
-        let mut proposal =
-            storage::get_proposal(&env, proposal_id).ok_or(EventRegistryError::ProposalNotFound)?;
-
-        if proposal.executed {
-            return Err(EventRegistryError::ProposalAlreadyExecuted);
-        }
-
-        // Check expiration
-        if proposal.expires_at != u64::MAX && env.ledger().timestamp() > proposal.expires_at {
-            return Err(EventRegistryError::ProposalExpired);
-        }
-
-        let config =
-            storage::get_multisig_config(&env).ok_or(EventRegistryError::NotInitialized)?;
-
-        // Check if proposal has sufficient approvals
-        if (proposal.approvals.len() as u32) < config.threshold {
-            return Err(EventRegistryError::InsufficientApprovals);
-        }
-
-        // Execute the proposal based on type
-        match &proposal.proposal_type {
-            ProposalType::SetPlatformWallet(new_wallet) => {
-                validate_address(&env, new_wallet)?;
-                storage::set_platform_wallet(&env, new_wallet);
-            }
-            ProposalType::AddAdmin(new_admin) => {
-                validate_address(&env, new_admin)?;
-                add_admin_internal(&env, new_admin)?;
-                env.events().publish(
-                    (AgoraEvent::AdminAdded,),
-                    AdminAddedEvent {
-                        admin: new_admin.clone(),
-                        added_by: executor.clone(),
-                        timestamp: env.ledger().timestamp(),
-                    },
-                );
-            }
-            ProposalType::RemoveAdmin(admin_to_remove) => {
-                remove_admin_internal(&env, admin_to_remove)?;
-                env.events().publish(
-                    (AgoraEvent::AdminRemoved,),
-                    AdminRemovedEvent {
-                        admin: admin_to_remove.clone(),
-                        removed_by: executor.clone(),
-                        timestamp: env.ledger().timestamp(),
-                    },
-                );
-            }
-            ProposalType::SetThreshold(new_threshold) => {
-                set_threshold_internal(&env, *new_threshold)?;
-                env.events().publish(
-                    (AgoraEvent::ThresholdUpdated,),
-                    ThresholdUpdatedEvent {
-                        old_threshold: config.threshold,
-                        new_threshold: *new_threshold,
-                        timestamp: env.ledger().timestamp(),
-                    },
-                );
-            }
-        }
-
-        // Mark proposal as executed
-        proposal.executed = true;
-        storage::store_proposal(&env, &proposal);
-        storage::remove_from_active_proposals(&env, proposal_id);
+        storage::set_global_promo_bps(&env, global_promo_bps);
+        storage::set_promo_expiry(&env, promo_expiry);
 
         env.events().publish(
-            (AgoraEvent::ProposalExecuted,),
-            ProposalExecutedEvent {
-                proposal_id,
-                executor,
+            (AgoraEvent::GlobalPromoUpdated,),
+            GlobalPromoUpdatedEvent {
+                global_promo_bps,
+                promo_expiry,
+                admin_address: admin,
                 timestamp: env.ledger().timestamp(),
             },
         );
@@ -678,85 +646,50 @@ impl EventRegistry {
         Ok(())
     }
 
-    /// Retrieves a proposal by ID.
-    pub fn get_proposal(env: Env, proposal_id: u64) -> Result<Proposal, EventRegistryError> {
-        storage::get_proposal(&env, proposal_id).ok_or(EventRegistryError::ProposalNotFound)
+    /// Returns the current global promotional discount rate in basis points.
+    pub fn get_global_promo_bps(env: Env) -> u32 {
+        storage::get_global_promo_bps(&env)
     }
 
-    /// Retrieves all active proposal IDs.
-    pub fn get_active_proposals(env: Env) -> Vec<u64> {
-        storage::get_active_proposals(&env)
+    /// Returns the expiry timestamp for the current global promo.
+    pub fn get_promo_expiry(env: Env) -> u64 {
+        storage::get_promo_expiry(&env)
     }
 
-    /// Retrieves the current multi-sig configuration.
-    pub fn get_multisig_config(env: Env) -> Result<MultiSigConfig, EventRegistryError> {
-        storage::get_multisig_config(&env).ok_or(EventRegistryError::NotInitialized)
-    }
-
-    /// Checks if an address is an admin.
-    pub fn is_admin(env: Env, address: Address) -> bool {
-        storage::is_admin(&env, &address)
-    }
-
-    /// Proposes to change the platform wallet (requires multi-sig approval).
-    /// This is a convenience function that creates a proposal.
-    pub fn propose_set_platform_wallet(
+    /// Marks an event as postponed and sets a temporary refund grace period.
+    /// During this window, all guests may request refunds regardless of their
+    /// ticket tier's standard refundability rules or refund deadlines.
+    pub fn postpone_event(
         env: Env,
-        proposer: Address,
-        new_wallet: Address,
-        expiration_ledgers: u32,
-    ) -> Result<u64, EventRegistryError> {
-        Self::create_proposal(
-            env,
-            proposer,
-            ProposalType::SetPlatformWallet(new_wallet),
-            expiration_ledgers,
-        )
-    }
+        event_id: String,
+        grace_period_end: u64,
+    ) -> Result<(), EventRegistryError> {
+        let mut event_info =
+            storage::get_event(&env, event_id.clone()).ok_or(EventRegistryError::EventNotFound)?;
 
-    /// Proposes to add a new admin (requires multi-sig approval).
-    pub fn propose_add_admin(
-        env: Env,
-        proposer: Address,
-        new_admin: Address,
-        expiration_ledgers: u32,
-    ) -> Result<u64, EventRegistryError> {
-        Self::create_proposal(
-            env,
-            proposer,
-            ProposalType::AddAdmin(new_admin),
-            expiration_ledgers,
-        )
-    }
+        // Only the organizer may postpone their event.
+        event_info.organizer_address.require_auth();
 
-    /// Proposes to remove an admin (requires multi-sig approval).
-    pub fn propose_remove_admin(
-        env: Env,
-        proposer: Address,
-        admin_to_remove: Address,
-        expiration_ledgers: u32,
-    ) -> Result<u64, EventRegistryError> {
-        Self::create_proposal(
-            env,
-            proposer,
-            ProposalType::RemoveAdmin(admin_to_remove),
-            expiration_ledgers,
-        )
-    }
+        let now = env.ledger().timestamp();
+        if grace_period_end <= now {
+            return Err(EventRegistryError::InvalidGracePeriodEnd);
+        }
 
-    /// Proposes to change the signature threshold (requires multi-sig approval).
-    pub fn propose_set_threshold(
-        env: Env,
-        proposer: Address,
-        new_threshold: u32,
-        expiration_ledgers: u32,
-    ) -> Result<u64, EventRegistryError> {
-        Self::create_proposal(
-            env,
-            proposer,
-            ProposalType::SetThreshold(new_threshold),
-            expiration_ledgers,
-        )
+        event_info.is_postponed = true;
+        event_info.grace_period_end = grace_period_end;
+        storage::update_event(&env, event_info.clone());
+
+        env.events().publish(
+            (AgoraEvent::EventPostponed,),
+            EventPostponedEvent {
+                event_id,
+                organizer_address: event_info.organizer_address,
+                grace_period_end,
+                timestamp: now,
+            },
+        );
+
+        Ok(())
     }
 }
 
@@ -784,102 +717,40 @@ fn validate_metadata_cid(env: &Env, cid: &String) -> Result<(), EventRegistryErr
     Ok(())
 }
 
-fn validate_proposal_type(
-    env: &Env,
-    proposal_type: &ProposalType,
+/// Suspends all active events for a blacklisted organizer.
+/// This implements the "Suspension" ripple effect.
+fn suspend_organizer_events(
+    env: Env,
+    organizer_address: Address,
 ) -> Result<(), EventRegistryError> {
-    match proposal_type {
-        ProposalType::SetPlatformWallet(wallet) => validate_address(env, wallet),
-        ProposalType::AddAdmin(admin) => {
-            validate_address(env, admin)?;
-            // Check if admin already exists
-            if storage::is_admin(env, admin) {
-                return Err(EventRegistryError::AdminAlreadyExists);
+    let organizer_events = storage::get_organizer_events(&env, &organizer_address);
+    let mut suspended_count = 0u32;
+
+    for event_id in organizer_events.iter() {
+        if let Some(mut event_info) = storage::get_event(&env, event_id.clone()) {
+            if event_info.is_active {
+                event_info.is_active = false;
+                storage::store_event(&env, event_info);
+                suspended_count += 1;
             }
-            Ok(())
-        }
-        ProposalType::RemoveAdmin(admin) => {
-            // Check if admin exists
-            if !storage::is_admin(env, admin) {
-                return Err(EventRegistryError::AdminNotFound);
-            }
-            // Check if this would remove the last admin
-            let config =
-                storage::get_multisig_config(env).ok_or(EventRegistryError::NotInitialized)?;
-            if config.admins.len() <= 1 {
-                return Err(EventRegistryError::CannotRemoveLastAdmin);
-            }
-            Ok(())
-        }
-        ProposalType::SetThreshold(threshold) => {
-            let config =
-                storage::get_multisig_config(env).ok_or(EventRegistryError::NotInitialized)?;
-            if *threshold == 0 || *threshold > config.admins.len() as u32 {
-                return Err(EventRegistryError::InvalidThreshold);
-            }
-            Ok(())
-        }
-    }
-}
-
-fn add_admin_internal(env: &Env, new_admin: &Address) -> Result<(), EventRegistryError> {
-    let mut config = storage::get_multisig_config(env).ok_or(EventRegistryError::NotInitialized)?;
-
-    // Check if admin already exists
-    for admin in config.admins.iter() {
-        if admin == *new_admin {
-            return Err(EventRegistryError::AdminAlreadyExists);
         }
     }
 
-    config.admins.push_back(new_admin.clone());
-    storage::set_multisig_config(env, &config);
-    Ok(())
-}
-
-fn remove_admin_internal(env: &Env, admin_to_remove: &Address) -> Result<(), EventRegistryError> {
-    let mut config = storage::get_multisig_config(env).ok_or(EventRegistryError::NotInitialized)?;
-
-    // Prevent removing the last admin
-    if config.admins.len() <= 1 {
-        return Err(EventRegistryError::CannotRemoveLastAdmin);
+    // Emit suspension event if any events were suspended
+    if suspended_count > 0 {
+        let admin = storage::get_admin(&env).ok_or(EventRegistryError::NotInitialized)?;
+        #[allow(deprecated)]
+        env.events().publish(
+            (AgoraEvent::EventsSuspended,),
+            EventsSuspendedEvent {
+                organizer_address,
+                suspended_event_count: suspended_count,
+                admin_address: admin,
+                timestamp: env.ledger().timestamp(),
+            },
+        );
     }
 
-    let mut new_admins = Vec::new(env);
-    let mut found = false;
-
-    for admin in config.admins.iter() {
-        if admin == *admin_to_remove {
-            found = true;
-        } else {
-            new_admins.push_back(admin);
-        }
-    }
-
-    if !found {
-        return Err(EventRegistryError::AdminNotFound);
-    }
-
-    config.admins = new_admins;
-
-    // Adjust threshold if it exceeds the new admin count
-    if config.threshold > config.admins.len() as u32 {
-        config.threshold = config.admins.len() as u32;
-    }
-
-    storage::set_multisig_config(env, &config);
-    Ok(())
-}
-
-fn set_threshold_internal(env: &Env, new_threshold: u32) -> Result<(), EventRegistryError> {
-    let mut config = storage::get_multisig_config(env).ok_or(EventRegistryError::NotInitialized)?;
-
-    if new_threshold == 0 || new_threshold > config.admins.len() as u32 {
-        return Err(EventRegistryError::InvalidThreshold);
-    }
-
-    config.threshold = new_threshold;
-    storage::set_multisig_config(env, &config);
     Ok(())
 }
 

@@ -180,9 +180,6 @@
                   "vec": [
                     {
                       "string": "pay_1"
-                    },
-                    {
-                      "string": "pay_1"
                     }
                   ]
                 }
@@ -230,9 +227,6 @@
                 "durability": "persistent",
                 "val": {
                   "vec": [
-                    {
-                      "string": "pay_1"
-                    },
                     {
                       "string": "pay_1"
                     }

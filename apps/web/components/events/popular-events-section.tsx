@@ -208,6 +208,7 @@ export function PopularEventsSection() {
               className="flex"
             >
               <EventCard
+                id={event.id}
                 title={event.title}
                 date={event.date}
                 location={event.location}

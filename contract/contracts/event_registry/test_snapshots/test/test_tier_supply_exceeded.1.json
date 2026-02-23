@@ -85,6 +85,28 @@
                     },
                     {
                       "key": {
+                        "symbol": "refund_deadline"
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "resale_cap_bps"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "restocking_fee"
+                      },
+                      "val": {
+                        "i128": "0"
+                      }
+                    },
+                    {
+                      "key": {
                         "symbol": "tiers"
                       },
                       "val": {
@@ -164,6 +186,9 @@
                 },
                 {
                   "string": "vip"
+                },
+                {
+                  "u32": 1
                 }
               ]
             }
@@ -186,6 +211,9 @@
                 },
                 {
                   "string": "vip"
+                },
+                {
+                  "u32": 1
                 }
               ]
             }
@@ -208,6 +236,9 @@
                 },
                 {
                   "string": "vip"
+                },
+                {
+                  "u32": 1
                 }
               ]
             }
@@ -380,6 +411,28 @@
                       },
                       "val": {
                         "u32": 500
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "refund_deadline"
+                      },
+                      "val": {
+                        "u64": "0"
+                      }
+                    },
+                    {
+                      "key": {
+                        "symbol": "resale_cap_bps"
+                      },
+                      "val": "void"
+                    },
+                    {
+                      "key": {
+                        "symbol": "restocking_fee"
+                      },
+                      "val": {
+                        "i128": "0"
                       }
                     },
                     {
