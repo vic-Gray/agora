@@ -87,6 +87,15 @@ pub fn store_event(env: &Env, event_info: EventInfo) {
     }
 }
 
+/// Updates event data without touching organizer index.
+/// Use this for mutations on already-registered events.
+pub fn update_event(env: &Env, event_info: EventInfo) {
+    let event_id = event_info.event_id.clone();
+    env.storage()
+        .persistent()
+        .set(&DataKey::Event(event_id), &event_info);
+}
+
 /// Retrieves event information by event_id.
 pub fn get_event(env: &Env, event_id: String) -> Option<EventInfo> {
     env.storage().persistent().get(&DataKey::Event(event_id))

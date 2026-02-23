@@ -216,6 +216,89 @@ pub fn get_bulk_refund_index(env: &Env, event_id: String) -> u32 {
         .unwrap_or(0)
 }
 
+pub fn has_price_switched(env: &Env, event_id: String, tier_id: String) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::PriceSwitched(event_id, tier_id))
+        .unwrap_or(false)
+}
+
+pub fn set_price_switched(env: &Env, event_id: String, tier_id: String) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::PriceSwitched(event_id, tier_id), &true);
+}
+
+pub fn get_total_volume_processed(env: &Env) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::TotalVolumeProcessed)
+        .unwrap_or(0)
+}
+
+pub fn add_to_total_volume_processed(env: &Env, amount: i128) {
+    let total = get_total_volume_processed(env) + amount;
+    env.storage()
+        .persistent()
+        .set(&DataKey::TotalVolumeProcessed, &total);
+}
+
+pub fn get_total_fees_collected_by_token(env: &Env, token: Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::TotalFeesCollected(token))
+        .unwrap_or(0)
+}
+
+pub fn add_to_total_fees_collected_by_token(env: &Env, token: Address, amount: i128) {
+    let current = get_total_fees_collected_by_token(env, token.clone());
+    env.storage()
+        .persistent()
+        .set(&DataKey::TotalFeesCollected(token), &(current + amount));
+}
+
+pub fn get_active_escrow_total(env: &Env) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ActiveEscrowTotal)
+        .unwrap_or(0)
+}
+
+pub fn add_to_active_escrow_total(env: &Env, amount: i128) {
+    let total = get_active_escrow_total(env) + amount;
+    env.storage()
+        .persistent()
+        .set(&DataKey::ActiveEscrowTotal, &total);
+}
+
+pub fn subtract_from_active_escrow_total(env: &Env, amount: i128) {
+    let total = get_active_escrow_total(env) - amount;
+    env.storage()
+        .persistent()
+        .set(&DataKey::ActiveEscrowTotal, &total);
+}
+
+pub fn get_active_escrow_by_token(env: &Env, token: Address) -> i128 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ActiveEscrowByToken(token))
+        .unwrap_or(0)
+}
+
+pub fn add_to_active_escrow_by_token(env: &Env, token: Address, amount: i128) {
+    let current = get_active_escrow_by_token(env, token.clone());
+    env.storage()
+        .persistent()
+        .set(&DataKey::ActiveEscrowByToken(token), &(current + amount));
+}
+
+pub fn subtract_from_active_escrow_by_token(env: &Env, token: Address, amount: i128) {
+    let current = get_active_escrow_by_token(env, token.clone());
+    env.storage()
+        .persistent()
+        .set(&DataKey::ActiveEscrowByToken(token), &(current - amount));
+}
+
 // ── Discount code registry ────────────────────────────────────────────────────
 
 /// Register a SHA-256 hash as a valid (unused) discount code.

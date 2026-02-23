@@ -167,9 +167,14 @@ impl EventRegistry {
                 // Verify organizer signature
                 event_info.organizer_address.require_auth();
 
+                // Skip storage/event writes when status is unchanged.
+                if event_info.is_active == is_active {
+                    return Ok(());
+                }
+
                 // Update status
                 event_info.is_active = is_active;
-                storage::store_event(&env, event_info.clone());
+                storage::update_event(&env, event_info.clone());
 
                 // Emit status update event using contract event type
                 env.events().publish(
@@ -202,9 +207,14 @@ impl EventRegistry {
                 // Validate new metadata CID
                 validate_metadata_cid(&env, &new_metadata_cid)?;
 
+                // Skip storage/event writes when metadata is unchanged.
+                if event_info.metadata_cid == new_metadata_cid {
+                    return Ok(());
+                }
+
                 // Update metadata
                 event_info.metadata_cid = new_metadata_cid.clone();
-                storage::store_event(&env, event_info.clone());
+                storage::update_event(&env, event_info.clone());
 
                 // Emit metadata update event
                 env.events().publish(
@@ -374,14 +384,14 @@ impl EventRegistry {
             .checked_add(quantity_i128)
             .ok_or(EventRegistryError::SupplyOverflow)?;
 
-        storage::store_event(&env, event_info.clone());
+        let new_supply = event_info.current_supply;
+        storage::update_event(&env, event_info);
 
         env.events().publish(
             (AgoraEvent::InventoryIncremented,),
             InventoryIncrementedEvent {
                 event_id,
-                new_supply: event_info.current_supply,
-                max_supply: event_info.max_supply,
+                new_supply,
                 timestamp: env.ledger().timestamp(),
             },
         );
@@ -439,14 +449,14 @@ impl EventRegistry {
             .checked_sub(1)
             .ok_or(EventRegistryError::SupplyUnderflow)?;
 
-        storage::store_event(&env, event_info.clone());
+        let new_supply = event_info.current_supply;
+        storage::update_event(&env, event_info);
 
         env.events().publish(
             (crate::events::AgoraEvent::InventoryDecremented,),
             crate::events::InventoryDecrementedEvent {
                 event_id,
-                new_supply: event_info.current_supply,
-                max_supply: event_info.max_supply,
+                new_supply,
                 timestamp: env.ledger().timestamp(),
             },
         );

@@ -1,7 +1,10 @@
 use super::*;
 use crate::error::EventRegistryError;
 use crate::types::{EventInfo, EventRegistrationArgs, TicketTier};
-use soroban_sdk::{testutils::Address as _, Address, Env, Map, String};
+use soroban_sdk::{
+    testutils::{Address as _, EnvTestConfig, Events},
+    Address, Env, Map, String,
+};
 
 #[test]
 fn test_initialize() {
@@ -1127,6 +1130,43 @@ fn test_multiple_tiers_inventory() {
 }
 
 #[test]
+fn test_update_event_status_noop_skips_event() {
+    let env = Env::new_with_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
+    env.mock_all_auths();
+    let contract_id = env.register(EventRegistry, ());
+    let client = EventRegistryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let organizer = Address::generate(&env);
+    let payment_addr = Address::generate(&env);
+    let platform_wallet = Address::generate(&env);
+
+    client.initialize(&admin, &platform_wallet, &500);
+
+    let event_id = String::from_str(&env, "status_noop_event");
+    let metadata_cid = String::from_str(
+        &env,
+        "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
+    );
+    let tiers = Map::new(&env);
+    client.register_event(&EventRegistrationArgs {
+        event_id: event_id.clone(),
+        organizer_address: organizer,
+        payment_address: payment_addr,
+        metadata_cid,
+        max_supply: 100,
+        milestone_plan: None,
+        tiers,
+    });
+
+    let _ = env.events().all();
+    client.update_event_status(&event_id, &true);
+    assert_eq!(env.events().all().len(), 0);
+}
+
+#[test]
 fn test_blacklist_organizer() {
     let env = Env::default();
     env.mock_all_auths();
@@ -1139,14 +1179,11 @@ fn test_blacklist_organizer() {
 
     client.initialize(&admin, &platform_wallet, &500);
 
-    // Blacklist organizer as admin
     let reason = String::from_str(&env, "Fraudulent activity detected");
     client.blacklist_organizer(&organizer, &reason);
 
-    // Verify organizer is blacklisted
     assert!(client.is_organizer_blacklisted(&organizer));
 
-    // Verify audit log entry
     let audit_log = client.get_blacklist_audit_log();
     assert_eq!(audit_log.len(), 1);
 
@@ -1165,23 +1202,24 @@ fn test_blacklist_prevents_event_registration() {
     let client = EventRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    let platform_wallet = Address::generate(&env);
     let organizer = Address::generate(&env);
     let payment_addr = Address::generate(&env);
+    let platform_wallet = Address::generate(&env);
 
     client.initialize(&admin, &platform_wallet, &500);
 
-    // Blacklist organizer first
     let reason = String::from_str(&env, "Suspicious activity");
     client.blacklist_organizer(&organizer, &reason);
 
-    // Try to register event - should fail
     let event_id = String::from_str(&env, "test_event");
-    let metadata_cid = String::from_str(&env, "bafybeigdyrzt5spx7udh7f");
+    let metadata_cid = String::from_str(
+        &env,
+        "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
+    );
     let tiers = Map::new(&env);
 
     let result = client.try_register_event(&EventRegistrationArgs {
-        event_id: event_id.clone(),
+        event_id,
         organizer_address: organizer,
         payment_address: payment_addr,
         metadata_cid,
@@ -1191,6 +1229,44 @@ fn test_blacklist_prevents_event_registration() {
     });
 
     assert_eq!(result, Err(Ok(EventRegistryError::OrganizerBlacklisted)));
+}
+
+#[test]
+fn test_update_metadata_noop_skips_event() {
+    let env = Env::new_with_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
+    env.mock_all_auths();
+
+    let contract_id = env.register(EventRegistry, ());
+    let client = EventRegistryClient::new(&env, &contract_id);
+
+    let admin = Address::generate(&env);
+    let organizer = Address::generate(&env);
+    let payment_addr = Address::generate(&env);
+    let platform_wallet = Address::generate(&env);
+
+    client.initialize(&admin, &platform_wallet, &500);
+
+    let event_id = String::from_str(&env, "metadata_noop_event");
+    let metadata_cid = String::from_str(
+        &env,
+        "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
+    );
+    let tiers = Map::new(&env);
+    client.register_event(&EventRegistrationArgs {
+        event_id: event_id.clone(),
+        organizer_address: organizer.clone(),
+        payment_address: payment_addr,
+        metadata_cid: metadata_cid.clone(),
+        max_supply: 100,
+        milestone_plan: None,
+        tiers,
+    });
+
+    let _ = env.events().all();
+    client.update_metadata(&event_id, &metadata_cid);
+    assert_eq!(env.events().all().len(), 0);
 }
 
 #[test]
@@ -1240,39 +1316,34 @@ fn test_blacklist_suspends_active_events() {
     let client = EventRegistryClient::new(&env, &contract_id);
 
     let admin = Address::generate(&env);
-    let platform_wallet = Address::generate(&env);
     let organizer = Address::generate(&env);
     let payment_addr = Address::generate(&env);
+    let platform_wallet = Address::generate(&env);
 
     client.initialize(&admin, &platform_wallet, &500);
 
-    // Register an active event
     let event_id = String::from_str(&env, "test_event");
     let metadata_cid = String::from_str(
         &env,
         "bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi",
     );
     let tiers = Map::new(&env);
-
     client.register_event(&EventRegistrationArgs {
         event_id: event_id.clone(),
         organizer_address: organizer.clone(),
         payment_address: payment_addr,
-        metadata_cid,
+        metadata_cid: metadata_cid.clone(),
         max_supply: 100,
         milestone_plan: None,
         tiers,
     });
 
-    // Verify event is active
     let event_info = client.get_event(&event_id).unwrap();
     assert!(event_info.is_active);
 
-    // Blacklist organizer - should suspend the event
     let reason = String::from_str(&env, "Fraud detected");
     client.blacklist_organizer(&organizer, &reason);
 
-    // Verify event is now suspended
     let event_info = client.get_event(&event_id).unwrap();
     assert!(!event_info.is_active);
 }
