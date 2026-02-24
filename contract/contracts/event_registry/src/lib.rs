@@ -6,7 +6,9 @@ use crate::events::{
     InventoryIncrementedEvent, MetadataUpdatedEvent, OrganizerBlacklistedEvent,
     OrganizerRemovedFromBlacklistEvent, RegistryUpgradedEvent,
 };
-use crate::types::{BlacklistAuditEntry, EventInfo, EventRegistrationArgs, PaymentInfo};
+use crate::types::{
+    BlacklistAuditEntry, EventInfo, EventRegistrationArgs, MultiSigConfig, PaymentInfo,
+};
 use soroban_sdk::{contract, contractimpl, Address, BytesN, Env, String, Vec};
 
 pub mod error;

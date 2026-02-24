@@ -1,4 +1,4 @@
-use crate::types::{BlacklistAuditEntry, DataKey, EventInfo};
+use crate::types::{BlacklistAuditEntry, DataKey, EventInfo, MultiSigConfig, Proposal};
 use soroban_sdk::{Address, Env, String, Vec};
 
 /// Sets the administrator address of the contract (legacy function).

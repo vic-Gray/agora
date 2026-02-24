@@ -112,6 +112,36 @@ pub struct BlacklistAuditEntry {
     pub timestamp: u64,
 }
 
+/// Multi-signature configuration for admin management
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MultiSigConfig {
+    /// List of admin addresses
+    pub admins: Vec<Address>,
+    /// Number of approvals required to execute a proposal
+    pub threshold: u32,
+}
+
+/// Represents a governance proposal
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Proposal {
+    /// Unique identifier for the proposal
+    pub proposal_id: u64,
+    /// Address that created the proposal
+    pub proposer: Address,
+    /// Description of the proposal
+    pub description: String,
+    /// Addresses that have approved this proposal
+    pub approvals: Vec<Address>,
+    /// Whether the proposal has been executed
+    pub executed: bool,
+    /// Timestamp when the proposal was created
+    pub created_at: u64,
+    /// Timestamp when the proposal expires
+    pub expires_at: u64,
+}
+
 /// Storage keys for the Event Registry contract.
 #[contracttype]
 pub enum DataKey {
@@ -139,4 +169,10 @@ pub enum DataKey {
     GlobalPromoBps,
     /// Expiry timestamp for the global promotional discount
     PromoExpiry,
+    /// Counter for proposal IDs
+    ProposalCounter,
+    /// Mapping of proposal_id to Proposal
+    Proposal(u64),
+    /// List of active proposal IDs
+    ActiveProposals,
 }
