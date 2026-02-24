@@ -25,6 +25,7 @@ pub struct EventRegistry;
 #[allow(deprecated)]
 impl EventRegistry {
     /// Initializes the contract configuration. Can only be called once.
+    /// Sets up initial admin with multi-sig configuration (threshold = 1 for single admin).
     ///
     /// # Arguments
     /// * `admin` - The administrator address.
@@ -52,7 +53,17 @@ impl EventRegistry {
         if initial_fee > 10000 {
             return Err(EventRegistryError::InvalidFeePercent);
         }
-        storage::set_admin(&env, &admin);
+
+        // Initialize multi-sig with single admin and threshold of 1
+        let mut admins = Vec::new(&env);
+        admins.push_back(admin.clone());
+        let multisig_config = MultiSigConfig {
+            admins,
+            threshold: 1,
+        };
+
+        storage::set_admin(&env, &admin); // Legacy support
+        storage::set_multisig_config(&env, &multisig_config);
         storage::set_platform_wallet(&env, &platform_wallet);
         storage::set_platform_fee(&env, initial_fee);
         storage::set_initialized(&env, true);
@@ -785,3 +796,6 @@ fn suspend_organizer_events(
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod test_multisig;

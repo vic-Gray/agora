@@ -125,8 +125,10 @@ pub struct BlacklistAuditEntry {
 /// Storage keys for the Event Registry contract.
 #[contracttype]
 pub enum DataKey {
-    /// The administrator address for contract management
+    /// The administrator address for contract management (legacy, kept for backward compatibility)
     Admin,
+    /// Multi-signature configuration
+    MultiSigConfig,
     /// The platform wallet address for fee collection
     PlatformWallet,
     /// The global platform fee percentage
