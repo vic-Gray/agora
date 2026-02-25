@@ -559,3 +559,26 @@ pub fn set_event_dispute_status(env: &Env, event_id: String, disputed: bool) {
         .persistent()
         .set(&DataKey::DisputeStatus(event_id), &disputed);
 }
+
+// ── Oracle configuration ──────────────────────────────────────────────────────
+
+pub fn set_oracle_address(env: &Env, address: &Address) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::OracleAddress, address);
+}
+
+pub fn get_oracle_address(env: &Env) -> Option<Address> {
+    env.storage().persistent().get(&DataKey::OracleAddress)
+}
+
+pub fn set_slippage_bps(env: &Env, bps: u32) {
+    env.storage().persistent().set(&DataKey::SlippageBps, &bps);
+}
+
+pub fn get_slippage_bps(env: &Env) -> u32 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::SlippageBps)
+        .unwrap_or(200)
+}

@@ -72,4 +72,6 @@ pub enum DataKey {
     DisputeStatus(String),               // event_id -> bool
     PartialRefundIndex(String),          // event_id -> last processed payment index
     PartialRefundPercentage(String),     // event_id -> active refund percentage in bps
+    OracleAddress,                       // Address of oracle contract
+    SlippageBps,                         // u32 — slippage tolerance in bps (default 200 = 2%)
 }

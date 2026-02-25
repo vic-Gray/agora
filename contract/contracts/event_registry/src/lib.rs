@@ -3,7 +3,7 @@
 use crate::events::{
     AgoraEvent, EventCancelledEvent, EventPostponedEvent, EventRegisteredEvent,
     EventStatusUpdatedEvent, EventsSuspendedEvent, FeeUpdatedEvent, GlobalPromoUpdatedEvent,
-    InitializationEvent, InventoryIncrementedEvent, MetadataUpdatedEvent,
+    GoalMetEvent, InitializationEvent, InventoryIncrementedEvent, MetadataUpdatedEvent,
     OrganizerBlacklistedEvent, OrganizerRemovedFromBlacklistEvent, RegistryUpgradedEvent,
     ScannerAuthorizedEvent,
 };
@@ -147,6 +147,9 @@ impl EventRegistry {
             resale_cap_bps: args.resale_cap_bps,
             is_postponed: false,
             grace_period_end: 0,
+            min_sales_target: args.min_sales_target.unwrap_or(0),
+            target_deadline: args.target_deadline.unwrap_or(0),
+            goal_met: false,
         };
 
         storage::store_event(&env, event_info);
@@ -450,6 +453,24 @@ impl EventRegistry {
             .ok_or(EventRegistryError::SupplyOverflow)?;
 
         let new_supply = event_info.current_supply;
+
+        // Check if goal met now
+        if !event_info.goal_met
+            && event_info.min_sales_target > 0
+            && event_info.current_supply >= event_info.min_sales_target
+        {
+            event_info.goal_met = true;
+            env.events().publish(
+                (AgoraEvent::GoalMet,),
+                GoalMetEvent {
+                    event_id: event_id.clone(),
+                    min_sales_target: event_info.min_sales_target,
+                    current_supply: event_info.current_supply,
+                    timestamp: env.ledger().timestamp(),
+                },
+            );
+        }
+
         storage::update_event(&env, event_info);
 
         env.events().publish(
@@ -829,6 +850,9 @@ fn suspend_organizer_events(
 
 #[cfg(test)]
 mod test;
+
+#[cfg(test)]
+mod test_e2e;
 
 // TODO: Uncomment when multisig functions are implemented
 // #[cfg(test)]

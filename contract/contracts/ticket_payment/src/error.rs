@@ -35,6 +35,11 @@ pub enum TicketPaymentError {
     EventDisputed = 36,
     UnauthorizedScanner = 37,
     TicketAlreadyUsed = 38,
+    GoalNotMet = 39,
+    OracleNotConfigured = 40,
+    OraclePriceUnavailable = 41,
+    PriceOutsideSlippage = 42,
+    InvalidSlippageBps = 43,
 }
 
 impl core::fmt::Display for TicketPaymentError {
@@ -107,6 +112,21 @@ impl core::fmt::Display for TicketPaymentError {
             }
             TicketPaymentError::TicketAlreadyUsed => {
                 write!(f, "Ticket has already been checked in/used")
+            }
+            TicketPaymentError::GoalNotMet => {
+                write!(f, "Minimum sales target not reached by the deadline")
+            }
+            TicketPaymentError::OracleNotConfigured => {
+                write!(f, "Oracle contract address not configured")
+            }
+            TicketPaymentError::OraclePriceUnavailable => {
+                write!(f, "Oracle returned no price for the asset")
+            }
+            TicketPaymentError::PriceOutsideSlippage => {
+                write!(f, "Payment amount outside acceptable slippage range")
+            }
+            TicketPaymentError::InvalidSlippageBps => {
+                write!(f, "Slippage basis points out of range (max 5000)")
             }
         }
     }
