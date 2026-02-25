@@ -12,6 +12,26 @@ function validateEmail(email: string): boolean {
   return emailRegex.test(email);
 }
 
+// Mask email for display
+function maskEmail(email: string): string {
+  const [local, domain] = email.split("@");
+  if (!domain) return email;
+  
+  const maskedLocal = local.length > 2 
+    ? local[0] + "*".repeat(local.length - 2) + local[local.length - 1]
+    : local;
+    
+  const domainParts = domain.split(".");
+  if (domainParts.length > 1) {
+    const maskedDomain = domainParts[0].length > 2
+      ? domainParts[0][0] + "*".repeat(domainParts[0].length - 2) + domainParts[0][domainParts[0].length - 1]
+      : domainParts[0];
+    return `${maskedLocal}@${maskedDomain}.${domainParts.slice(1).join(".")}`;
+  }
+  
+  return `${maskedLocal}@${domain}`;
+}
+
 // Email Input Screen Component
 function EmailScreen({
   onSubmit,
@@ -69,12 +89,48 @@ function EmailScreen({
     onSubmit(email);
   };
 
+  const handleGoogleSignIn = () => {
+    // Mock Google sign in
+    console.log("Google sign in clicked");
+  };
+
+  const handleAppleSignIn = () => {
+    // Mock Apple sign in
+    console.log("Apple sign in clicked");
+  };
+
   return (
     <div className="w-full max-w-[400px] mx-auto">
+      {/* Back Button */}
+      <button
+        type="button"
+        className="flex items-center gap-2 text-gray-600 hover:text-black transition-colors mb-6"
+      >
+        <Image
+          src="/icons/arrow-left.svg"
+          alt="Back"
+          width={20}
+          height={20}
+          className="w-5 h-5"
+        />
+        <span className="text-sm font-medium">Back</span>
+      </button>
+
+      {/* Logo - Centered */}
+      <div className="flex justify-center mb-6">
+        <Image
+          src="/logo/agora logo.svg"
+          alt="Agora"
+          width={120}
+          height={40}
+          className="h-10 w-auto"
+        />
+      </div>
+
       {/* Header */}
       <div className="text-center mb-8">
         <h1 className="text-2xl sm:text-3xl font-bold text-black mb-3">
-          Welcome Back
+          Welcome to agora
         </h1>
         <p className="text-gray-600 text-sm sm:text-base">
           Enter your email to sign in or create an account
@@ -110,7 +166,7 @@ function EmailScreen({
               placeholder="Enter your email"
               disabled={isLoading}
               className={`
-                w-full pl-12 pr-4 py-3 rounded-full border-2 bg-white
+                w-full pl-12 pr-4 py-3 rounded-xl border-2 bg-white
                 text-black placeholder:text-gray-400
                 transition-all duration-200
                 focus:outline-none focus:ring-2 focus:ring-black/10
@@ -127,7 +183,7 @@ function EmailScreen({
           )}
         </div>
 
-        {/* Submit Button */}
+        {/* Submit Button - Yellow */}
         <button
           type="submit"
           disabled={isLoading}
@@ -135,8 +191,8 @@ function EmailScreen({
             w-full py-3 px-6 rounded-full font-semibold
             flex items-center justify-center gap-2
             transition-all duration-200
-            bg-black text-white
-            hover:bg-gray-900 hover:shadow-lg
+            bg-[#FACC15] text-black
+            hover:bg-[#EAB308] hover:shadow-lg
             active:scale-[0.98]
             disabled:opacity-70 disabled:cursor-not-allowed disabled:hover:shadow-none
           `}
@@ -167,7 +223,7 @@ function EmailScreen({
             </>
           ) : (
             <>
-              <span>Continue</span>
+              <span>Continue with Email</span>
               <Image
                 src="/icons/arrow-right.svg"
                 alt="Arrow"
@@ -178,6 +234,69 @@ function EmailScreen({
             </>
           )}
         </button>
+
+        {/* Divider */}
+        <div className="relative">
+          <div className="absolute inset-0 flex items-center">
+            <div className="w-full border-t border-gray-200"></div>
+          </div>
+          <div className="relative flex justify-center text-sm">
+            <span className="px-4 bg-white text-gray-500">or</span>
+          </div>
+        </div>
+
+        {/* Social Sign In Buttons */}
+        <div className="space-y-3">
+          {/* Google Sign In */}
+          <button
+            type="button"
+            onClick={handleGoogleSignIn}
+            disabled={isLoading}
+            className="
+              w-full py-3 px-6 rounded-full font-medium
+              flex items-center justify-center gap-3
+              transition-all duration-200
+              bg-white text-black border-2 border-gray-200
+              hover:bg-gray-50 hover:border-gray-300
+              active:scale-[0.98]
+              disabled:opacity-50 disabled:cursor-not-allowed
+            "
+          >
+            <Image
+              src="/icons/google.svg"
+              alt="Google"
+              width={20}
+              height={20}
+              className="w-5 h-5"
+            />
+            <span>Sign in with Google</span>
+          </button>
+
+          {/* Apple Sign In */}
+          <button
+            type="button"
+            onClick={handleAppleSignIn}
+            disabled={isLoading}
+            className="
+              w-full py-3 px-6 rounded-full font-medium
+              flex items-center justify-center gap-3
+              transition-all duration-200
+              bg-black text-white
+              hover:bg-gray-900 hover:shadow-lg
+              active:scale-[0.98]
+              disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-none
+            "
+          >
+            <Image
+              src="/icons/apple.svg"
+              alt="Apple"
+              width={20}
+              height={20}
+              className="w-5 h-5"
+            />
+            <span>Sign in with Apple</span>
+          </button>
+        </div>
       </form>
 
       {/* Terms */}
@@ -340,6 +459,7 @@ function OtpScreen({
     <div className="w-full max-w-[400px] mx-auto">
       {/* Back Button */}
       <button
+        type="button"
         onClick={onBack}
         className="flex items-center gap-2 text-gray-600 hover:text-black transition-colors mb-6"
       >
@@ -353,14 +473,25 @@ function OtpScreen({
         <span className="text-sm font-medium">Back</span>
       </button>
 
+      {/* Logo - Centered */}
+      <div className="flex justify-center mb-6">
+        <Image
+          src="/logo/agora logo.svg"
+          alt="Agora"
+          width={120}
+          height={40}
+          className="h-10 w-auto"
+        />
+      </div>
+
       {/* Header */}
       <div className="text-center mb-8">
         <h1 className="text-2xl sm:text-3xl font-bold text-black mb-3">
-          Verify Your Email
+          Check your email
         </h1>
         <p className="text-gray-600 text-sm sm:text-base">
           We sent a 5-digit code to{" "}
-          <span className="font-medium text-black">{email}</span>
+          <span className="font-medium text-black">{maskEmail(email)}</span>
         </p>
       </div>
 
@@ -386,7 +517,7 @@ function OtpScreen({
           <p className="text-red-500 text-sm text-center">{error}</p>
         )}
 
-        {/* Verify Button */}
+        {/* Verify Button - Yellow */}
         <button
           type="submit"
           disabled={isLoading || otpCode.length !== 5}
@@ -394,8 +525,8 @@ function OtpScreen({
             w-full py-3 px-6 rounded-full font-semibold
             flex items-center justify-center gap-2
             transition-all duration-200
-            bg-black text-white
-            hover:bg-gray-900 hover:shadow-lg
+            bg-[#FACC15] text-black
+            hover:bg-[#EAB308] hover:shadow-lg
             active:scale-[0.98]
             disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:shadow-none
           `}
@@ -425,14 +556,14 @@ function OtpScreen({
               <span>Verifying...</span>
             </>
           ) : (
-            <span>Verify</span>
+            <span>Verify Code</span>
           )}
         </button>
 
         {/* Resend Code */}
         <div className="text-center">
           <p className="text-gray-500 text-sm">
-            Didn&apos;t receive the code?{" "}
+            Didn't receive the code?{" "}
             <button
               type="button"
               onClick={handleResend}
@@ -466,7 +597,7 @@ function SuccessScreen() {
 
       {/* Header */}
       <h1 className="text-2xl sm:text-3xl font-bold text-black mb-3">
-        You&apos;re All Set!
+        You're All Set!
       </h1>
       <p className="text-gray-600 text-sm sm:text-base mb-8">
         Your account has been verified successfully.
@@ -529,20 +660,22 @@ export default function AuthPage() {
 
   return (
     <main className="min-h-screen bg-gray-50 flex flex-col">
-      {/* Header / Logo */}
-      <header className="w-full py-6 px-4">
-        <div className="max-w-[1221px] mx-auto">
-          <div className="flex items-center gap-2">
-            <Image
-              src="/logo/agora logo.svg"
-              alt="Agora"
-              width={120}
-              height={40}
-              className="h-10 w-auto"
-            />
+      {/* Header / Logo - Only show on email screen */}
+      {step === "email" && (
+        <header className="w-full py-6 px-4">
+          <div className="max-w-[1221px] mx-auto">
+            <div className="flex items-center gap-2">
+              <Image
+                src="/logo/agora logo.svg"
+                alt="Agora"
+                width={120}
+                height={40}
+                className="h-10 w-auto"
+              />
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
+      )}
 
       {/* Main Content */}
       <div className="flex-1 flex items-center justify-center px-4 py-8">
@@ -566,8 +699,6 @@ export default function AuthPage() {
           {step === "success" && <SuccessScreen />}
         </div>
       </div>
-
-      {/* TODO: Add forms and logic here */}
     </main>
   );
 }
